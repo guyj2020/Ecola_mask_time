@@ -1,0 +1,3 @@
+# Cron
+# utee
+CUDA_VISIBLE_DEVICES=2 python3 run_e2e_train.py --loss_lambda 0.3 --exp masking_time_utee --tkg_type 'UTEE' --ablation 11 --seed 10000 --train_batch_size 16 --se_prop 0.8 --num_train_epoch 1000 --dataset 'Cron' --data_dir "/mnt/data/liao/yujia/ecola_data/cron_24_09/" --entity_dic_file "/mnt/data/liao/yujia/ecola_data/cron_15_09/entities.txt" --relation_dic_file "/mnt/data/liao/yujia/ecola_data/cron_15_09/relations.txt" --log_file_dir '/mnt/data/liao/yujia/ecola_masking_time_data/logs' --model_save_dir '/mnt/data/liao/yujia/ecola_data/ckpts' --kg_model_chkpnt '/home/stud/liao/yujia/CronKGQA/models/wikidata_big/kg_embeddings/UTEE_0.8.chkpnt'

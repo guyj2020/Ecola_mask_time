@@ -30,10 +30,9 @@ sys.path.insert(0, '../TKB_finetuning_2')
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp", type=str, default=f'e2e2_{datetime.datetime.now()}', help='set your experiment_name')
-    parser.add_argument("--debug_mode", default=False, action="store_true", help='whether or not log to mlflow')
     parser.add_argument('--data_dir', type=str, default='../data/pretrain_data/e2e_data/',
                         help='training data directory path')
-    parser.add_argument('--dataset', type=str, default='GDELT', help='name of loaded dataset', choices=['GDELT', 'DuEE', 'Wiki','TSQA'])
+    parser.add_argument('--dataset', type=str, default='GDELT', help='name of loaded dataset', choices=['GDELT','GDELT-s', 'DuEE', 'Wiki','TSQA', 'Cron'])
     parser.add_argument('--tkg_type', type=str, default='DE', help='name of used tkg_embs', choices=['DE', 'UTEE'])
     parser.add_argument('--model_save_dir', type=str, default='../model/ckpts_e2e_2/',
                         help='checkpoint and predictions saving path')
@@ -51,6 +50,7 @@ def parse_args():
                         help='each line is of form: relation id in gdelt, relation index, relation in plain text')
     parser.add_argument('--num_samples_per_file', type=int, default=80000)
     parser.add_argument("--do_train", default=True, action='store_true', help="Whether to run training.")
+    parser.add_argument("--do_eval", default=False, action='store_true', help="Whether to run init eval.")
     parser.add_argument('--train_batch_size', type=int, default=4)
     parser.add_argument('--log_batch_steps', type=int, default=1000)
     parser.add_argument('--learning_rate', type=float, default=2e-5)
@@ -70,10 +70,9 @@ def parse_args():
     parser.add_argument('--val_batch_size', type=int, default=2)
     parser.add_argument('--print_out_loss_steps', type=int, default=1000)
 
-    parser.add_argument('--lm', type=str, default='bert_base', choices=['bert_base','bert_large'], help='choose your language model')
     parser.add_argument('--loss_lambda', type=float, default=0.3, help='Regularization lambda for MLM loss')
-    parser.add_argument('--mask_opt', type=int, default=2, choices=[0,1,2,3,4], help='Masking strategy')
-    parser.add_argument('--ablation', type=int, default=3, choices=[0,1,2,3,4,5,6,7,8,9], help='ablation study settings | 0: No | 1: use kg static part only | 2: uniform embedding | 3: shared tkg settings')
+    parser.add_argument('--mask_opt', type=int, default=2, choices=[0,1,2,3], help='Masking strategy')
+    parser.add_argument('--ablation', type=int, default=3, choices=[0,1,2,3,4,5,6,7,8,9,10,11], help='ablation study settings | 0: No | 1: use kg static part only | 2: uniform embedding | 3: shared tkg settings')
 
     parser.add_argument('--no_cuda', action='store_true', help="Whether not to use CUDA when available")
     parser.add_argument('--fp16', action='store_true',
@@ -89,19 +88,9 @@ def setup_args_gpu(args, logger):
     """
     setup arguments for CUDA
     """
-    # if args.local_rank == -1 or args.no_cuda:  # single-node multi-gpu (or cpu) mode
-        # device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        # args.n_gpu = torch.cuda.device_count()
-    
-    if args.local_rank == -1 or args.no_cuda:
-    # elif args.local_rank == -2: # choose multi gpu manually
-        gpu_list = [2,3]
-        gpu_list_str = ','.join(map(str, gpu_list))
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", gpu_list_str)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.local_rank == -1 or args.no_cuda:  # single-node multi-gpu (or cpu) mode
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         args.n_gpu = torch.cuda.device_count()
-        print('args.n_gpu: ', args.n_gpu)
-
     else:  # distributed mode
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
@@ -150,7 +139,6 @@ def setup_for_distributed_mode(model, optimizer, device, n_gpu: int=1, local_ran
 
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
-        print('torch.nn.DataParallel is on working')
 
     if local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
@@ -239,14 +227,14 @@ def replace_batch_data(facts, head_or_tail, num_ent, device, tkg_type, dataset):
             hours = torch.tensor(hours).float().to(device)
             mins = (replaced_data[:, 3] % 10000) % 100 # day
             mins = torch.tensor(mins).float().to(device)
-        elif dataset == 'GDELT': # Gdelt
+        elif dataset == 'GDELT' or dataset == 'GDELT-s': # Gdelt
             days = (replaced_data[:, 3] / 15) // 96 + 1
             days = torch.tensor(days).float().to(device)
             hours = (replaced_data[:, 3] % 1440) // 60
             mins = ((replaced_data[:, 3] % 1440) % 60) // 15
             hours = torch.tensor(hours).float().to(device)
             mins = torch.tensor(mins).float().to(device)
-        elif dataset == 'Wiki' or dataset == 'TSQA': # Wiki 
+        elif dataset == 'Wiki' or dataset == 'TSQA' or dataset == 'Cron': # Wiki
             days = torch.tensor(replaced_data[:, 3]).float().to(device)
             hours, mins = None, None
         return heads, rels, tails, days, hours, mins, replaced_data
@@ -327,7 +315,7 @@ def randomize_training_instances(args, logger, dataset_name):
                 for x in f:
                     instance = json.loads(x)
                     all_processed_data.append(instance)
-    elif dataset_name == 'DuEE' or dataset_name == 'TSQA':
+    elif dataset_name == 'DuEE' or dataset_name == 'TSQA' or dataset_name == 'GDELT-s':
         with open(os.path.join(args.data_dir, f'training_data.json'), 'r') as f:
             for x in f:
                 instance = json.loads(x)
@@ -338,13 +326,19 @@ def randomize_training_instances(args, logger, dataset_name):
                 for x in f:
                     instance = json.loads(x)
                     all_processed_data.append(instance)
+    elif dataset_name == 'Cron':
+        for i in range(15):
+            with open(os.path.join(args.data_dir, f'training_data_{i}.json'), 'r') as f:
+                for x in f:
+                    instance = json.loads(x)
+                    all_processed_data.append(instance)
     # shuffle the data
     random.seed(args.seed)
     random.shuffle(all_processed_data)
     # split the new data
     logger.info('Start to split and save all data......')
     l = len(all_processed_data)
-    if dataset_name == 'GDELT' or dataset_name == 'Wiki':
+    if dataset_name =='GDELT' or dataset_name == 'Wiki' or dataset_name == 'Cron':
         num_files = int(math.ceil(l / args.num_samples_per_file))
         for n in range(num_files - 1):
             cur_data = all_processed_data[n * args.num_samples_per_file: (n + 1) * args.num_samples_per_file]
@@ -358,7 +352,7 @@ def randomize_training_instances(args, logger, dataset_name):
         with open(os.path.join(args.data_dir, f'training_data_{num_files - 1}.json'), 'w') as fw:
             for d in cur_data:
                 fw.write(json.dumps(d) + '\n')
-    elif dataset_name == 'DuEE' or dataset_name == 'TSQA':
+    elif dataset_name == 'DuEE' or dataset_name == 'TSQA' or dataset_name == 'GDELT-s':
         num_files = 1
         cur_data = all_processed_data
         logger.info(f'Writing #{num_files} file...')
@@ -373,13 +367,13 @@ def main():
 
     # setup mlflow logger
     if args.dataset == 'DuEE':
-        args.debug_mode = False
+        debug_mode = False
     else:
-        args.debug_mode = False
-    if not args.debug_mode:
-        if args.dataset == 'GDELT':
+        debug_mode = False
+    if not debug_mode:
+        if args.dataset.startswith('GDELT'):
             mlflow_logger = MLFlow_Logger('/'.join(os.path.realpath(__file__).split('/')[-3:]))
-        elif args.dataset == 'DuEE' or args.dataset == 'Wiki' or args.dataset == 'TSQA' :
+        elif args.dataset == 'DuEE' or args.dataset == 'Wiki' or args.dataset == 'TSQA' or args.dataset == 'Cron':
             mlflow_logger = MLFlow_Logger('{}/'.format(args.dataset) +'/'.join(os.path.realpath(__file__).split('/')[-2:]))
     else:
         mlflow_logger = MLFlow_Logger('debug/'+'/'.join(os.path.realpath(__file__).split('/')[-2:]))
@@ -431,21 +425,18 @@ def main():
         lines = freader.readlines()
     rel_num = len(lines)
 
-    # max t in gdelt = 38865 / 15
-    time_num = 2593
-
     logger.info(f'#entities: {ent_num - 1}, #relations: {rel_num - 1}')
 
-    if args.lm == 'bert_base':
-        tokenizer = BertTokenizer.from_pretrained('../model/bert_origin/bert-base-uncased')
-        config = BertConfig.from_pretrained('../model/bert_origin/bert-base-uncased')
-    elif args.lm == 'bert_large':
-        tokenizer = BertTokenizer.from_pretrained('../model/bert_origin/bert-large-uncased')
-        config = BertConfig.from_pretrained('../model/bert_origin/bert-large-uncased')
+    tokenizer = BertTokenizer.from_pretrained('/home/stud/liao/yujia/Ecola/FTKE_Bert/model/bert_origin/bert-base-uncased')
+    config = BertConfig.from_pretrained('/home/stud/liao/yujia/Ecola/FTKE_Bert/model/bert_origin/bert-base-uncased')
     word_mask_index = tokenizer.mask_token_id
-
+    # max t in gdelt = 38865 / 15
+    if args.dataset == 'GDELT':
+        time_num = 2593
+    if args.dataset == 'Cron':
+        time_num = 1000
     # prepare the training data
-    train_data = E2EDataset(args.data_dir, word_mask_index, config.vocab_size, ent_num, rel_num,
+    train_data = E2EDataset(args.data_dir, word_mask_index, config.vocab_size, ent_num, rel_num, time_num,
                             args.seed, tokenizer, args.neg_ratio, args.mask_opt, args.dataset)
     if args.local_rank == -1:
         # train_sampler = RandomSampler(train_data)
@@ -466,20 +457,11 @@ def main():
         tkg_model = torch.load(args.kg_model_chkpnt, map_location=torch.device('cpu')).module
     else:
         tkg_model = None
-    
-    if args.lm == 'bert_base':
-        model = E2EBertTKG.from_pretrained('../model/bert_origin/bert-base-uncased', ent_num=ent_num, rel_num=rel_num, se_prop=args.se_prop,
-                                       drop_out=args.drop_out, tkg_model=None, tkg_type=args.tkg_type, dataset=args.dataset, \
-                                        loss_lambda=args.loss_lambda, ablation=args.ablation)
-    elif args.lm == 'bert_large':
-        model = E2EBertTKG.from_pretrained('../model/bert_origin/bert-large-uncased', ent_num=ent_num, rel_num=rel_num, se_prop=args.se_prop,
-                                       drop_out=args.drop_out, tkg_model=None, tkg_type=args.tkg_type, dataset=args.dataset, \
-                                        loss_lambda=args.loss_lambda, ablation=args.ablation)
-    # model = torch.nn.DataParallel(model)
 
-    if args.ablation != 2:
-        model.extend_type_embeddings(token_type=4)
-        
+    model = E2EBertTKG.from_pretrained('/home/stud/liao/yujia/Ecola/FTKE_Bert/model/bert_origin/bert-base-uncased', ent_num=ent_num, rel_num=rel_num, time_num=time_num, se_prop=args.se_prop,
+                                       drop_out=args.drop_out, tkg_model=None, tkg_type=args.tkg_type, dataset=args.dataset, \
+                                        loss_lambda=args.loss_lambda, ablation=args.ablation)
+
     # load the pre-trained checkpoint if exists
     if args.model_to_load is not None:
         pretrained_dict = torch.load(args.model_to_load, map_location=torch.device('cpu'))
@@ -496,10 +478,10 @@ def main():
         pretrained_model = torch.load(args.kg_model_chkpnt, map_location=torch.device('cpu')).module
         pretrained_model.eval()
         pretrained_dict = pretrained_model.state_dict()
-        target_keys = ['ent_embeddingsh_static.weight', 'ent_embeddingst_static.weight', 'rel_embeddings_f.weight', 'rel_embeddings_i.weight']
-        new_keys = ['ent_embs_h.weight','ent_embs_t.weight','rel_embs_f.weight', 'rel_embs_i.weight']
-        for key,n_key in zip(target_keys, new_keys):
-            pretrained_dict[n_key] = pretrained_dict.pop(key)
+        # target_keys = ['ent_embeddingsh_static.weight', 'ent_embeddingst_static.weight', 'rel_embeddings_f.weight', 'rel_embeddings_i.weight']
+        # new_keys = ['ent_embs_h.weight','ent_embs_t.weight','rel_embs_f.weight', 'rel_embs_i.weight']
+        # for key,n_key in zip(target_keys, new_keys):
+        #     pretrained_dict[n_key] = pretrained_dict.pop(key)
         # print(pretrained_dict.keys())
         model_dict = model.state_dict()
         pretrained_dict = {k : v for k, v in pretrained_dict.items() if k in model_dict}
@@ -507,6 +489,10 @@ def main():
         # print(model_dict.keys())
         model.load_state_dict(model_dict)
 
+    if args.ablation != 2:
+        model.extend_type_embeddings(token_type=3)
+    if args.ablation == 11:
+        model.extend_type_embeddings(token_type=4)
 
 
     optimizer = AdamW(params=model.parameters(), lr=args.learning_rate, betas=(args.adam_beta1, args.adam_beta2),
@@ -524,8 +510,8 @@ def main():
     warm_up_steps = int(args.warm_up * num_training_steps)
         
     # initial evaluation of model
-    ini_eval = False
-    if ini_eval:
+    # ini_eval = False
+    if args.do_eval:
         logger.info('****** Start initial evaluation of model ******')
         model.eval()
         metrics = validate_batch_and_save(model, train_data, args, 'test', logger)
@@ -550,13 +536,15 @@ def main():
             model.train()
             train_loss = 0.0
             t1 = time.time()
+            t_start = t1
             # total_steps_per_epoch = train_iterator.num_batches
 
             for step, batch in enumerate(train_iterator):
                 
                 batch_x, batch_y = batch
+
                 # batch_x and batch_y are dictionaries, get the tensor and move them to the current device
-                input_ids, num_tokens, attention_mask, token_type_ids, word_masked_lm_labels, entity_masked_lm_labels, \
+                input_ids, num_tokens, attention_mask, token_type_ids, word_masked_lm_labels, entity_masked_lm_labels,\
                 relation_masked_lm_labels, time_masked_lm_labels, tkg_tuple, tuple_labels = parse_batch_x(batch_x, args.device)
 
                 word_masked_lm_labels_y, entity_masked_lm_labels_y, relation_masked_lm_labels_y, time_masked_lm_labels_y \
@@ -582,6 +570,10 @@ def main():
                 else:
                     loss = output_dic['total_loss']
                     mlm_loss = output_dic['mlm_loss']
+                    entity_lm_loss = output_dic['entity_lm_loss']
+                    relation_lm_loss = output_dic['relation_lm_loss']
+                    time_lm_loss = output_dic['time_lm_loss']
+                    word_lm_loss = output_dic['word_lm_loss']
                     tkg_loss = output_dic['tkg_loss']
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
@@ -607,7 +599,6 @@ def main():
                 relation_acc = calculate_accuracy(output_dic['rel_pred'], relation_masked_lm_labels_y)
                 time_acc = calculate_accuracy(output_dic['time_pred'], time_masked_lm_labels_y)
 
-
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
                     scheduler.step()
@@ -616,13 +607,19 @@ def main():
                 if step % args.log_batch_steps == 0:
                     lr = optimizer.param_groups[0]['lr']
                     t2 = time.time()
-                    logger.info(f'Epoch: {epoch}, Step: {step+1}/{total_steps_per_epoch}, LR: {lr}, Time: {t2 - t1}s, '
-                                f'Word_acc: {word_acc}, Ent_acc: {entity_acc}, Rel_acc: {relation_acc}, Time_acc:{time_acc} \t'
-                                f'Total_loss: {loss.item()}, MLM_loss: {mlm_loss.item()}, TKG_loss: {tkg_loss.item()}\n')
+                    total_time = t2 - t_start
+                    m, s = divmod(total_time, 60)
+                    h, m = divmod(m, 60)
+
+                    logger.info(
+                        f'Epoch: {epoch}, Step: {step + 1}/{total_steps_per_epoch}, LR: {lr}, Time: {t2 - t1}s, total_training_time {"%02d:%02d:%02d" % (h, m, s)},'
+                        f'Word_acc: {word_acc}, Ent_acc: {entity_acc}, Rel_acc: {relation_acc}, Time_acc: {time_acc}\n'
+                        f'Total_loss: {loss.item()}, TKG_loss: {tkg_loss.item()}, MLM_loss: {mlm_loss.item()}, word_lm_loss: {word_lm_loss.item()}, entity_lm_loss: {entity_lm_loss.item()}, relation_lm_loss: {relation_lm_loss.item()}, time_lm_loss: {time_lm_loss.item()}\n')
+
                     t1 = t2
                     if mlflow_logger:
                         mlflow_logger.metrics_summary(
-                            {'Learning Rate': lr, 'Word_acc': word_acc, 'Ent_acc': entity_acc, 'Rel_acc': relation_acc,
+                            {'Learning Rate': lr, 'Word_acc': word_acc, 'Ent_acc': entity_acc, 'Rel_acc': relation_acc,'Time_acc': time_acc,
                             'Total_loss': loss.item(), 'MLM_loss': mlm_loss.item(), 'TKG_loss': tkg_loss.item()}, step+1)
                         mlflow_logger.artifact_summary(os.path.join(args.log_file_dir, log_file))
 
@@ -631,23 +628,25 @@ def main():
             fout.write(f'Average loss of epoch {epoch}: {train_loss} \n\n')
             mlflow_logger.metrics_summary({'avg_loss': train_loss},epoch)
 
-            # evaluate the model
-            logger.info('****** Start validation ******')
-            model.eval()
-            if args.dataset == 'Wiki' or args.dataset == 'DuEE':
-                metrics = validate_batch_and_save(model, train_data, args, 'test', logger)
-            else:
-                metrics = validate_batch_and_save(model, train_data, args, 'val', logger)
-            mrr = metrics['mrr']
-            if mrr > best_mrr:
-                best_mrr = mrr
-                best_model_index = str(epoch)
-                mlflow_logger.metrics_summary({'best_mrr': best_mrr, 'best_model_index': int(best_model_index)}, epoch)
-                mlflow_logger.metrics_summary(metrics, epoch)
             # save the model
             model_to_save = model.module if hasattr(model, 'module') else model
             output_model_name = os.path.join(args.model_save_dir, f'model_{epoch}.bin')
             torch.save(model_to_save.state_dict(), output_model_name)
+
+            # # evaluate the model
+            # logger.info('****** Start validation ******')
+            # model.eval()
+            # if args.dataset == 'Wiki' or args.dataset == 'DuEE':
+            #     metrics = validate_batch_and_save(model, train_data, args, 'test', logger)
+            # else:
+            #     metrics = validate_batch_and_save(model, train_data, args, 'val', logger)
+            # mrr = metrics['mrr']
+            # if mrr > best_mrr:
+            #     best_mrr = mrr
+            #     best_model_index = str(epoch)
+            #     mlflow_logger.metrics_summary({'best_mrr': best_mrr, 'best_model_index': int(best_model_index)}, epoch)
+            #     mlflow_logger.metrics_summary(metrics, epoch)
+
 
             # shuffle the data by myself...... (text + tuple)
             randomize_training_instances(args, logger, args.dataset)
@@ -664,16 +663,13 @@ def main():
 
         logger.info(f'The best mrr is {best_mrr}, the best model index is {best_model_index}')
         mlflow_logger.artifact_summary(os.path.join(args.log_file_dir, log_file))
-        if not args.debug_mode:
+        if not debug_mode:
             mlflow_logger.artifact_summary(os.path.join(args.model_save_dir, f'model_{best_model_index}.bin'))
 
         # start to test
         model_path = os.path.join(args.model_save_dir, f'model_{best_model_index}.bin')
         plm_state_dict = torch.load(model_path)
-        if args.lm == 'bert_base':
-            pretrain_config = BertConfig.from_pretrained('../model/bert_origin/bert-base-uncased', type_vocab_size=3)
-        if args.lm == 'bert_large':
-            pretrain_config = BertConfig.from_pretrained('../model/bert_origin/bert-large-uncased', type_vocab_size=3)
+        pretrain_config = BertConfig.from_pretrained('/home/stud/liao/yujia/Ecola/FTKE_Bert/model/bert_origin/bert-base-uncased', type_vocab_size=3)
         plm_model = E2EBertTKG(pretrain_config, ent_num=ent_num, rel_num=rel_num, se_prop=args.se_prop,
                                        drop_out=args.drop_out, tkg_model=tkg_model, tkg_type=args.tkg_type, dataset=args.dataset, \
                                         loss_lambda=args.loss_lambda, ablation=args.ablation)

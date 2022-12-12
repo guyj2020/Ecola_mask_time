@@ -14,7 +14,7 @@ class MLFlow_Logger:
 
         # remote_server_uri = "https://10.153.51.172:4040" # set to your server URI
         # mlflow.set_tracking_uri("https://172.30.236.213:4040")
-        mlflow.set_tracking_uri("file:///home/wiss/zhang/ruotong/TKGC/FTKE_Bert/mlruns/")
+        mlflow.set_tracking_uri("file:///mnt/data/liao/yujia/mlflow/Ecoal_mask_time/mlruns/")
         mlflow.set_experiment(experiment_name)
 
     def metric_summary(self, key, value, step):

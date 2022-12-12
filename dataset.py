@@ -11,7 +11,7 @@ WORD_PADDING_INDEX = 103
 
 class E2EDataset(Dataset):
     def __init__(self, pretrain_input_file_dir, word_mask_index, word_vocab_size, entity_vocab_size,
-                 relation_vocab_size, random_seed, tokenizer, neg_ratio=1, mask_opt=2, dataset_name='GDELT'):
+                 relation_vocab_size, time_vocab_size, random_seed, tokenizer, neg_ratio=1, mask_opt=2, dataset_name='GDELT'):
         """
         :param pretrain_input_file_dir: training_data.json (text + tuple), train.txt, val.txt, test.txt
         :param word_mask_index: 103, if use bert tokenizer
@@ -25,12 +25,12 @@ class E2EDataset(Dataset):
         self.word_mask_index = word_mask_index
         self.word_vocab_size = word_vocab_size
         self.entity_vocab_size = entity_vocab_size
+        self.time_vocab_size = time_vocab_size
         self.relation_vocab_size = relation_vocab_size
-        # self.time_vocab_size = time_vocab_size
         self.random_seed = random_seed
         self.tokenizer = tokenizer
         self.dataset_name = dataset_name
-        if self.dataset_name == 'GDELT' or self.dataset_name =='Wiki':
+        if self.dataset_name == 'GDELT' or self.dataset_name =='Wiki' or self.dataset_name =='Cron':
             # read the training json file
             # i split the data into 10 files
             self.current_file_idx = 0
@@ -42,6 +42,8 @@ class E2EDataset(Dataset):
                 self.last_file_idx = 9
             elif self.dataset_name == 'Wiki':
                 self.last_file_idx = 2
+            elif self.dataset_name == 'Cron':
+                self.last_file_idx = 14
             self.last_file_data = self.read_training_json_file(os.path.join(pretrain_input_file_dir,
                                                             f'training_data_{self.last_file_idx}.json'))
             self.num_samples = self.num_samples_per_file * self.last_file_idx + len(self.last_file_data)
@@ -50,7 +52,7 @@ class E2EDataset(Dataset):
             #         os.path.join(pretrain_input_file_dir, f'train_instances.json'))
             #     self.num_samples_per_file = len(self.data)
             #     self.num_samples = len(self.data)
-        elif self.dataset_name == 'DuEE' or self.dataset_name == 'TSQA':
+        elif self.dataset_name == 'DuEE' or self.dataset_name == 'TSQA' or self.dataset_name == 'GDELT-s':
             self.data = self.read_training_json_file(os.path.join(pretrain_input_file_dir, 'training_data.json'))
             self.num_samples_per_file = len(self.data)
             self.num_samples = len(self.data)
@@ -70,7 +72,6 @@ class E2EDataset(Dataset):
         self.true_head, self.true_tail = self.get_true_head_and_tail(self.all_data_as_tuples)
         for spl in ['train', 'val', 'test']:
             self.tkg_data[spl] = np.array(self.tkg_data[spl])
-        self.time_vocab_size = int(max(self.tkg_data['train'][:,3]) / 15) + 2
 
     @staticmethod
     def get_true_head_and_tail(all_tuples):
@@ -203,32 +204,39 @@ class E2EDataset(Dataset):
             mask_i = random.randint(1,2)
             if mask_i == 1:
                 entities, entities_mlm_labels = create_mlm_instances(token_ids[-3: -1], self.entity_vocab_size - 1,
-                                                                self.entity_vocab_size, mask_opt)
+                                                                     self.entity_vocab_size,  mask_opt)
                 relation = [token_ids[-1]]
+                # print(relation.type())
                 relation_mlm_labels = np.linspace(-100, -100, len(relation)).astype(int).tolist()
+
             elif mask_i == 2:
                 relation, relation_mlm_labels = create_mlm_instances([token_ids[-1]], self.relation_vocab_size - 1,
                                                                  self.relation_vocab_size, mask_opt)
                 entities = token_ids[-3: -1]
                 entities_mlm_labels = np.linspace(-100, -100, len(entities)).astype(int).tolist()
-        
-    
-        time, time_mlm_labels = create_mlm_instances([time_idx], self.time_vocab_size - 1, 
-                                                                 self.time_vocab_size, mask_opt)
-        time_mlm_labels = [int (x/15) for x in time_mlm_labels if x != -100]
-        # time = list(map(int, time))
+        time, time_mlm_labels = create_mlm_instances([time_idx], self.time_vocab_size - 1,
+                                                     self.time_vocab_size, mask_opt)
+        if self.dataset_name == 'GDELT':
+            time_mlm_labels = [int(x / 15) for x in time_mlm_labels if x != -100]
+        if self.dataset_name == 'Cron':
+            time_mlm_labels = [int(x-1500) for x in time_mlm_labels if x != -100]
+
+
+
         return words, words_mlm_labels, entities, entities_mlm_labels, relation, relation_mlm_labels, time, time_mlm_labels
 
     def collate_fn(self, batch):
         # MLM part and TKG part
         data = []
+
+
         for instance in batch:
             token_ids = instance['token_ids']
             time_idx = instance['tuple'][-1]
-            words, words_mlm_labels, entities, entities_mlm_labels, relation, relation_mlm_labels, time, time_mlm_lables = \
+            words, words_mlm_labels, entities, entities_mlm_labels, relation, relation_mlm_labels, time, time_mlm_labels= \
                 self.apply_mask_strategy(token_ids, time_idx, self.mask_opt)
 
-            input_ids = words + entities + relation + time  # + token_ids[-1] # add the last [SEP] token
+            input_ids = words + entities + relation + time# + token_ids[-1] # add the last [SEP] token
             num_tokens = len(input_ids)
             attention_mask = [1] * num_tokens
             # word tokens: 0, entity: 1, relation: 2
@@ -241,12 +249,12 @@ class E2EDataset(Dataset):
                 'word_masked_lm_labels': words_mlm_labels,
                 'entity_masked_lm_labels': entities_mlm_labels,
                 'relation_masked_lm_labels': relation_mlm_labels,
-                'time_masked_lm_labels': time_mlm_lables,
+                'time_masked_lm_labels': time_mlm_labels,
                 'tkg_tuple': instance['tuple']
             })
 
         input_keys = ['input_ids', 'num_tokens', 'attention_mask', 'token_type_ids', 'word_masked_lm_labels',
-                      'entity_masked_lm_labels', 'relation_masked_lm_labels', 'time_masked_lm_labels', 'tkg_tuple', 'tuple_labels']
+                      'entity_masked_lm_labels', 'relation_masked_lm_labels','time_masked_lm_labels', 'tkg_tuple', 'tuple_labels']
         output_keys = ['word_masked_lm_labels', 'entity_masked_lm_labels', 'relation_masked_lm_labels', 'time_masked_lm_labels']
         max_tokens_len = 0
         batch_x = {n: [] for n in input_keys}
@@ -261,7 +269,8 @@ class E2EDataset(Dataset):
                     batch_y[k].append(v)
             num_tokens = sample['num_tokens']
             batch_num_tokens.append(num_tokens)
-            max_tokens_len = max(max_tokens_len, num_tokens)
+            # max_tokens_len + time
+            max_tokens_len = max(max_tokens_len, num_tokens)+1
         # tuple_labels
         batch_x['tuple_labels'] = [[] for i in range(len(batch))]
         # pad the instance, add the negative examples
@@ -272,17 +281,15 @@ class E2EDataset(Dataset):
                                       [WORD_PADDING_INDEX] * pad_tokens + batch_x['input_ids'][i][num_word_tokens:]
             batch_x['attention_mask'][i] = batch_x['attention_mask'][i][0: num_word_tokens] + \
                                            [0] * pad_tokens + batch_x['attention_mask'][i][num_word_tokens:]
-            batch_x['token_type_ids'][i] = batch_x['token_type_ids'][i] + [0] * pad_tokens
+            batch_x['token_type_ids'][i] = batch_x['token_type_ids'][i] + [0] * (pad_tokens)
             batch_x['word_masked_lm_labels'][i] = batch_x['word_masked_lm_labels'][i][0: num_word_tokens] + \
                                                   [-100] * (pad_tokens + 4)
             batch_y['word_masked_lm_labels'][i] = batch_x['word_masked_lm_labels'][i][0: -4]
 
             batch_x['entity_masked_lm_labels'][i] = [-100] * (max_tokens_len - 4) + batch_x['entity_masked_lm_labels'][
-                i] + [-100] + [-100]
+                i] + [-100] * 2
 
-            batch_x['relation_masked_lm_labels'][i] = [-100] * (max_tokens_len - 2) + \
-                                                      batch_x['relation_masked_lm_labels'][i] + [-100]
-            
+            batch_x['relation_masked_lm_labels'][i] = [-100] * (max_tokens_len - 2) + batch_x['relation_masked_lm_labels'][i] + [-100]
             batch_x['time_masked_lm_labels'][i] = [-100] * (max_tokens_len - 1) + batch_x['time_masked_lm_labels'][i]
 
             batch_x['num_tokens'][i] = max(max_tokens_len, batch_num_tokens[i])

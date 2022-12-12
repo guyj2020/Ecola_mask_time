@@ -7,9 +7,7 @@ import torch
 import logging
 import socket
 from torch.optim.lr_scheduler import LambdaLR
-import tqdm
-import json
-import math
+
 
 MLMInstance = collections.namedtuple("MLMInstance", ["index", "label"])
 
@@ -39,7 +37,7 @@ def create_mlm_instances(tokens, mask_index, vocab_size, mask_opt, tokenizer=Non
 
     if mask_opt <= 2:
         num_to_predict = min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob))))
-    elif mask_opt >= 3:
+    elif mask_opt == 3:
         if len(tokens) == 2: # entity masking
             num_to_predict = np.random.choice(np.arange(1, 3), p=[2/3, 1/3])
         else:
